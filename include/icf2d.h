@@ -12,4 +12,8 @@ extern double*
 icf_construct_2d(const double*, const int, const double*, const double*, const double, const int, const int, const int, const int*, const int,
       const double, const double, const double, const double, const int);
 
+extern double
+icf_construct_1d(const double*, const int, const double*, const double*, const double, const int, const int, const int, const int*, const int,
+      const double, const double, const double, const double, const char*);
+
 #endif

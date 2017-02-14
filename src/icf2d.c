@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <atlas/cblas.h>
+#include <string.h>
 
 
 double* icf_firstterm(const double* W, const double* G_w_inv, const double* grad_V, const int size_grad_V, const int num_cv)
@@ -154,7 +155,7 @@ double* icf_construct_2d(const double* X_m, const int size_X_m, const double* mu
    // Matrix multiplication with cblas_dgemm()
    // Calculating C <- aA * B + bC (A: M x K, B: K x N, C: M x N)
    // In this case, we are multiplying grad_cv_t with mu_inv (D x 3N) x (3N x 3N)
-   // So, M = D, K = N = 3N
+   // LD's are just number of columns in original matrices (row-major order), no matter if they are transposed in the calculation!!
    W = zeros(num_cv*size_X_m);  // D x 3N
    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, num_cv, size_X_m, size_X_m, 1.0, grad_cv_t, size_X_m, mu_inv, size_X_m, 0.0, W, size_X_m);
 
@@ -174,4 +175,83 @@ double* icf_construct_2d(const double* X_m, const int size_X_m, const double* mu
    free(mu_inv);
 
    return icf;
+}
+
+
+double icf_construct_1d(const double *X_m, const int size_X_m, const double* mu, const double* grad_V, const double kT, const int ra_ind, 
+      const int rb_ind, const int cn_a_ind, const int* cn_b_inds, const int size_cn_b_inds, const double n, const double m, 
+      const double r0, const double L, const char* label)
+{
+   double *grad, *hess_i;
+   double *W, *mu_inv;
+   double *tmp1, *tmp2, *tmp;
+   double ss_inner, ss_front;
+   double G_w_inv, first, second;
+   double sum_divergence = 0.0;
+   int i;
+
+   // Select gradient according to coordinate label
+   if (strcmp(label, "r") == 0)
+      grad = r_grad_x(X_m, size_X_m, ra_ind, rb_ind, L);
+   else if (strcmp(label, "cn") == 0)
+      grad = cn_grad_x(X_m, size_X_m, cn_a_ind, cn_b_inds, size_cn_b_inds, n, m, r0, L);
+   // Should put other else as exception, but for now just let it be.
+
+   mu_inv = deep_copy(mu, size_X_m*size_X_m);
+   matrix_invert(mu_inv, size_X_m);
+
+   W = zeros(size_X_m);    // 3N x 1 vector (1D case)
+   cblas_dgemv(CblasRowMajor, CblasNoTrans, size_X_m, size_X_m, 1.0, mu_inv, size_X_m, grad, 1, 0.0, W, 1);
+
+   // G_w_inv is a scalar!!
+   G_w_inv = 1.0/(cblas_ddot(size_X_m, W, 1, grad, 1));
+
+   // firstterm is now a scalar!!
+   tmp1 = deep_copy(W, size_X_m);
+   cblas_dscal(size_X_m, (-1.0)*G_w_inv, tmp1, 1);
+   first = cblas_ddot(size_X_m, tmp1, 1, grad_V, 1);
+   free(tmp1);
+
+   // Explicitly calculate the second term here!! Don't modify the function as they work for cases with matrices!! 
+   // Relinking will be pain!
+   for (i = 0; i < size_X_m; i++)
+   {
+      if (strcmp(label, "r") == 0)
+         hess_i = r_hess_x_j(X_m, size_X_m, r_a, r_b, i, L);
+      else if(strcmp(label, "cn") == 0)
+         hess_i = cn_hess_x_j(X_m, size_X_m, i, cn_a, cn_b, size_cn_b, n, m, r0, L);
+
+      // First subterm
+      tmp1 = zeros(size_X_m);
+      cblas_dgemv(CblasRowMajor, CblasNoTrans, size_X_m, size_X_m, G_w_inv, mu_inv, size_X_m, hess_i, 1, 0.0, tmp1, 1);
+
+      // Second subterm
+      tmp2 = zeros(size_X_m);
+      cblas_dgemv(CblasRowMajor, CblasNoTrans, size_X_m, size_X_m, 1.0, mu_inv, size_X_m, hess_i, 1, 0.0, tmp2, 1);
+      ss_inner = cblas_ddot(size_X_m, tmp2, 1, grad, 1);
+      ss_inner = ss_inner + cblas_ddot(size_X_m, W, 1, hess_i, 1);
+      free(tmp2);
+
+      ss_front = (-1.0)*G_w_inv*ss_inner*G_w_inv;
+      tmp2 = deep_copy(W, size_X_m);
+      cblas_dscal(size_X_m, ss_front, tmp2, 1);
+
+      // tmp1 and tmp2 are first and second subterm vectors! Add them
+      tmp = deep_copy(tmp2, size_X_m);
+      cblas_daxpy(size_X_m, 1.0, tmp1, 1, tmp, 1);
+      sum_divergence += tmp[i];
+
+      free(hess_i);
+      free(tmp1);
+      free(tmp2);
+      free(tmp);
+   }
+
+   second = kT * sum_divergence;
+
+   free(mu_inv);
+   free(W);
+   free(grad);
+
+   return (first + second);
 }
